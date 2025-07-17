@@ -1,0 +1,107 @@
+# Config for training an LLM-to-SDXL adapter with naifu
+name: llm-to-sdxl-adapter-run
+target: modules.train_llm_to_sdxl_adapter.setup
+
+model:
+  # Path to the local LLM model directory (e.g., Gemma, Mistral)
+  llm_path: /path/to/your/llm_model
+  # Optional parameters to customize the EnhancedLLMToSDXLAdapter architecture.
+  # These values override the defaults set in the model's Python code.
+  # You can uncomment and change these to experiment with the model structure.
+  adapter_params:
+    # n_wide_blocks: 3      # Number of transformer blocks before compression.
+    # n_narrow_blocks: 3    # Number of transformer blocks after compression.
+    # num_heads: 16         # Number of attention heads.
+    # dropout: 0.1          # Dropout rate for regularization.
+
+trainer:
+  # This should be the path to your base SDXL 1.0 model in safetensors format
+  model_path: /path/to/your/sdxl-base-1.0.safetensors
+  # For 24GB VRAM with high-res images, start with a batch size of 1.
+  batch_size: 1
+  seed: 218
+  wandb_id: ""
+  # Use xformers for memory-efficient attention. Highly recommended.
+  use_xformers: true
+  # Compensate for the small batch size to get an effective batch size of 1 * 8 = 8.
+  accumulate_grad_batches: 8
+  gradient_clip_val: 0.0
+
+  save_format: safetensors
+  checkpoint_dir: checkpoint/llm_adapter
+  checkpoint_freq: 1
+  checkpoint_steps: -1
+  save_weights_only: true
+  max_epochs: 60
+  max_steps: -1
+
+advanced:
+  # If not using pre-encoded latents, this should be low to avoid OOM during VAE encoding.
+  vae_encode_batch_size: 2
+  # Text encoders are not used in this module, these settings are ignored
+  train_text_encoder_1: false
+  train_text_encoder_2: false
+  # Diffusion process settings - good defaults for SDXL
+  offset_noise: false
+  offset_noise_val: 0.0375
+  min_snr: true
+  min_snr_val: 5
+  timestep_start: 0
+  timestep_end: 1000
+  v_parameterization: true
+  zero_terminal_snr: true
+  
+lightning:
+  accelerator: gpu
+  devices: -1
+  precision: bf16-mixed
+
+dataset:
+  # AspectRatioDataset is recommended. It handles bucketing automatically.
+  name: data.bucket.AspectRatioDataset 
+  # For a high-res dataset, it is STRONGLY recommended to pre-encode latents using `scripts/encode_latents_xl.py`.
+  # This saves a significant amount of VRAM by not needing the VAE loaded during training.
+  # Path to your dataset of images or pre-encoded latents.
+  img_path: "/path/to/your/dataset_or_latents"
+  # The target area for bucketing, which is the total number of pixels (width * height).
+  # 1_048_576 corresponds to 1024*1024, the standard training resolution for SDXL.
+  # The system will create buckets of different aspect ratios with a similar total area.
+  target_area: 1_048_576
+  # max_token_length is used by the dataset for caption handling, but the LLM has its own max length.
+  max_token_length: 225
+
+optimizer:
+  # AdamW8bit is a good choice for memory efficiency.
+  name: bitsandbytes.optim.AdamW8bit
+  params:
+    # A higher learning rate is often used for adapters compared to full finetuning.
+    lr: 1e-4
+    weight_decay: 1e-2
+
+scheduler:
+  name: transformers.get_cosine_schedule_with_warmup
+  params:
+    num_warmup_steps: 250
+    last_epoch: -1
+
+sampling:
+  enabled: true
+  use_wandb: true
+  seed: 218
+  height: 1024
+  width: 1024
+  every_n_steps: 1000
+  every_n_epochs: -1
+  save_dir: "samples/llm_adapter"
+
+  # --- Optional Advanced Sampling Parameters ---
+  # You can override the defaults from the sampling method here.
+  steps: 28
+  guidance_scale: 5.218
+  scheduler: "diffusers.EulerAncestralDiscreteScheduler" # Example: Use a different scheduler
+
+  # The prompts list can be a simple list of strings (for positive prompts only)
+  # or a list of dictionaries for per-prompt negative prompts.
+  prompts:
+    - prompt: "A majestic lion in a lush jungle, golden hour lighting"
+      negative_prompt: "cartoon, drawing, illustration, blurry, watermark, text, signature"
